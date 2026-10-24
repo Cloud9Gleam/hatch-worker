@@ -1,0 +1,164 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Explain x402: How Autonomous Agents Pay for API Access</title>
+<style>body{font-family:system-ui,sans-serif;max-width:720px;margin:2em auto;padding:0 1em;line-height:1.65;color:#1a1a1a}code{background:#f0f0f0;padding:0 .2em}a{color:#0b5fff}.ref{color:#666;font-size:.85em}</style>
+</head><body><p class="ref">Ref: KB-2410-07</p>
+<h1>Explain x402: How Autonomous Agents Pay for API Access</h1>
+<p>An autonomous agent that needs a weather forecast, a search result, or a</p>
+<p>single database lookup faces a payment problem that humans rarely notice.</p>
+<p>Human-oriented APIs are sold by subscription: create an account, add a</p>
+<p>credit card, buy a monthly plan, and manage an API key. An agent that needs</p>
+<p>exactly one call does not want a subscription, an account, or a card. It</p>
+<p>wants to pay a fraction of a cent for that one call, in the same request</p>
+<p>that asks for the data, and move on.</p>
+<p>x402 is an open protocol that makes that possible. Developed by Coinbase</p>
+<p>and released in 2025, it turns the long-dormant HTTP status code 402</p>
+<p>(&quot;Payment Required&quot;) into a working machine-to-machine payment handshake.</p>
+<p>Instead of accounts and keys, the client pays with a signed blockchain</p>
+<p>authorization; instead of invoices, the server settles the payment through</p>
+<p>a facilitator and returns the resource. This article explains the</p>
+<p>protocol, the negotiation flow, and a concrete end-to-end example.</p>
+<p>Sources: the x402 project site (https://www.x402.org/), the reference</p>
+<p>implementation (https://github.com/coinbase/x402), the Coinbase Developer</p>
+<p>Platform x402 documentation (https://docs.cdp.coinbase.com/x402), and</p>
+<p>EIP-3009, the signed-authorization standard the payment scheme is built on</p>
+<p>(https://eips.ethereum.org/EIPS/eip-3009).</p>
+<h2>The problem: accounts do not scale to agents</h2>
+<p>Traditional API billing assumes a durable relationship between buyer and</p>
+<p>seller. The seller issues credentials, meters usage, and bills later. That</p>
+<p>model breaks for agents in three ways. First, onboarding friction: an</p>
+<p>agent cannot fill out a signup form or pass a card check for every service</p>
+<p>it might touch once. Second, granularity: many agent tasks are worth a</p>
+<p>cent or less, below the minimum viable charge of card networks. Third,</p>
+<p>composability: an agent that chains ten services in one workflow would</p>
+<p>need ten accounts, ten keys, and ten billing relationships.</p>
+<p>Stablecoins on fast, low-fee chains solve the money part, but not the</p>
+<p>protocol part. A server still needs a standard way to say &quot;this resource</p>
+<p>costs this much, payable this way,&quot; and a client needs a standard way to</p>
+<p>answer &quot;here is my payment, now serve the resource.&quot; x402 is that</p>
+<p>standard, layered on plain HTTP so that any client or server can adopt</p>
+<p>it without a new transport.</p>
+<h2>The three roles</h2>
+<p>Every x402 interaction involves three roles:</p>
+<p>1. <strong>Client.</strong> The buyer, usually an autonomous agent. It holds a wallet</p>
+<p>   with stablecoins (USDC is the canonical example) and can sign</p>
+<p>   messages. It needs no account with the server.</p>
+<p>2. <strong>Server (resource provider).</strong> The seller. It decides the price of</p>
+<p>   each resource and declares what payment it accepts. It does not touch</p>
+<p>   the blockchain directly.</p>
+<p>3. <strong>Facilitator.</strong> A service that verifies the client&#x27;s payment</p>
+<p>   authorization and submits the on-chain transfer. Facilitators are</p>
+<p>   interchangeable: a server can use a hosted facilitator, run its own,</p>
+<p>   or let the client suggest one. The facilitator is what keeps the</p>
+<p>   server&#x27;s code simple — the server only ever talks HTTP.</p>
+<p>A fourth party, the chain itself, settles the transfer. x402 launched on</p>
+<p>Base, Coinbase&#x27;s Layer 2 network, and support has since extended to</p>
+<p>additional networks. The examples below use Base and USDC, the</p>
+<p>best-documented combination.</p>
+<h2>The negotiation flow, step by step</h2>
+<p>The flow is deliberately boring: it is two HTTP round trips with</p>
+<p>well-defined headers.</p>
+<p><strong>Step 1: the client asks without paying.</strong> The agent sends an ordinary</p>
+<p>GET (or POST) to the resource, for example</p>
+<p><code>GET /v1/premium-forecast?city=Osaka</code>. It includes no payment header and</p>
+<p>no credentials.</p>
+<p><strong>Step 2: the server answers 402 with payment requirements.</strong> Instead of</p>
+<p>the resource, the server returns HTTP 402 and a JSON body describing</p>
+<p>exactly what it accepts. The key fields are:</p>
+<ul>
+<li><code>scheme</code>: <code>&quot;exact&quot;</code>, meaning the client pays precisely the quoted</li>
+</ul>
+<p>  amount (as opposed to an &quot;upto&quot; scheme, where the server may charge up</p>
+<p>  to a ceiling).</p>
+<ul>
+<li><code>network</code>: <code>&quot;base&quot;</code>, the chain the payment settles on.</li>
+<li><code>maxAmountRequired</code>: the price in the token&#x27;s smallest unit. USDC has</li>
+</ul>
+<p>  six decimals, so <code>&quot;10000&quot;</code> means $0.01.</p>
+<ul>
+<li><code>asset</code>: the token contract address (USDC on Base).</li>
+<li><code>payTo</code>: the server&#x27;s receiving wallet address.</li>
+<li><code>resource</code>: the URL being purchased, so the payment cannot be replayed</li>
+</ul>
+<p>  against a different endpoint.</p>
+<ul>
+<li><code>description</code> and <code>maxTimeoutSeconds</code>: human-readable context and how</li>
+</ul>
+<p>  long the offer stands.</p>
+<p>The client now has everything it needs to decide: is the price</p>
+<p>acceptable, is the asset one it holds, is the payee the expected seller?</p>
+<p>A careful client checks all three before signing anything.</p>
+<p><strong>Step 3: the client signs and retries.</strong> Under the &quot;exact&quot; scheme on</p>
+<p>EVM chains, payment is an EIP-3009 <code>transferWithAuthorization</code>: the</p>
+<p>client signs a message authorizing a transfer of a specific amount, to a</p>
+<p>specific recipient, valid only within a time window, with a unique nonce.</p>
+<p>Crucially, the client does not submit a blockchain transaction and pays</p>
+<p>no gas — it only produces a signature. It base64-encodes the signed</p>
+<p>payload and repeats the original request with an <code>X-PAYMENT</code> header</p>
+<p>carrying it.</p>
+<p><strong>Step 4: the server verifies and settles through the facilitator.</strong></p>
+<p>The server forwards the payload to the facilitator&#x27;s <code>/verify</code></p>
+<p>endpoint, which checks the signature, the nonce, the amount, the</p>
+<p>recipient, and the validity window. If verification passes, the server</p>
+<p>asks the facilitator to <code>/settle</code>: the facilitator submits the</p>
+<p>authorization on-chain, the USDC moves from the client to the server,</p>
+<p>and the facilitator returns a settlement receipt including the</p>
+<p>transaction hash.</p>
+<p><strong>Step 5: the server serves the resource.</strong> The server returns the</p>
+<p>requested data with an <code>X-PAYMENT-RESPONSE</code> header containing the</p>
+<p>settlement receipt. The client can confirm on-chain that the exact</p>
+<p>amount went to the exact payee, and both sides have a cryptographic</p>
+<p>receipt for the exchange.</p>
+<p>If verification fails — wrong amount, expired window, bad signature —</p>
+<p>the server returns an error and serves nothing. No money moves without a</p>
+<p>valid, server-checked authorization.</p>
+<h2>A concrete end-to-end example</h2>
+<p>Imagine an agent planning a delivery route that needs one premium</p>
+<p>forecast for Osaka, priced at $0.01.</p>
+<p>1. The agent requests <code>/v1/premium-forecast?city=Osaka</code> and receives</p>
+<p>   402: scheme <code>exact</code>, network <code>base</code>, <code>maxAmountRequired</code> <code>&quot;10000&quot;</code>,</p>
+<p>   asset USDC on Base, <code>payTo</code> <code>0xServer…</code>, <code>maxTimeoutSeconds</code> 60.</p>
+<p>2. The agent checks the price against its budget ($0.01 is under its</p>
+<p>   $0.05 per-call ceiling), confirms it holds Base USDC, and notes the</p>
+<p>   60-second window.</p>
+<p>3. The agent signs an EIP-3009 authorization: from its wallet, to the</p>
+<p>   server&#x27;s address, value <code>10000</code>, valid for the next 60 seconds, with</p>
+<p>   a fresh random nonce. It retries the request with the <code>X-PAYMENT</code></p>
+<p>   header.</p>
+<p>4. The server&#x27;s facilitator verifies the signature and nonce, submits</p>
+<p>   the transfer, and returns a settlement receipt with the transaction</p>
+<p>   hash. The server responds 200 with the forecast and the receipt in</p>
+<p>   <code>X-PAYMENT-RESPONSE</code>.</p>
+<p>5. The agent records the transaction hash, verifies the $0.01 transfer</p>
+<p>   on a Base explorer, and proceeds with route planning. Total</p>
+<p>   overhead: one extra round trip and one signature. No account, no</p>
+<p>   key, no subscription, no gas paid by the agent.</p>
+<p>Notice what the agent never did: it never registered, never stored a</p>
+<p>secret for this server, and never prepaid a balance that could strand</p>
+<p>funds. Each call is self-contained, which is exactly the property an</p>
+<p>agent fleet needs when it may call a service once and never again.</p>
+<h2>Why this matters, and where to be careful</h2>
+<p>For sellers, x402 turns any HTTP endpoint into a pay-per-use product:</p>
+<p>one endpoint, one price, no billing system. For buyers, it turns every</p>
+<p>API into something an agent can consume on first contact. That is why</p>
+<p>the protocol has attracted directories and discovery layers where</p>
+<p>agents browse priced endpoints the way humans browse app stores.</p>
+<p>Careful clients still check the details. The quoted price in the 402</p>
+<p>response is the only price that matters — compare it with the advertised</p>
+<p>price before signing. Confirm the <code>asset</code> contract is the genuine USDC</p>
+<p>contract, not an imitation token with the same symbol. Respect the</p>
+<p>validity window: an authorization that lives too long can be replayed</p>
+<p>within its window, so short windows and fresh nonces are good practice.</p>
+<p>And remember that settlement is only as trustworthy as the facilitator</p>
+<p>path: the on-chain transaction hash in the receipt is the proof, so</p>
+<p>verify it rather than trusting the header alone.</p>
+<h2>The bigger picture</h2>
+<p>x402 does not replace subscriptions for heavy, repeated use — a</p>
+<p>standing relationship with volume pricing still makes sense there. What</p>
+<p>it replaces is the assumption that a relationship must exist before the</p>
+<p>first byte flows. By putting price discovery, payment, and settlement</p>
+<p>inside the HTTP exchange itself, it gives autonomous agents something</p>
+<p>they have never had: the ability to pay for exactly what they use, from</p>
+<p>any seller, on first contact, without asking a human to sign up first.</p>
+<p class="ref">Published as an independent educational explainer. Sources linked inline.</p>
+</body></html>
